@@ -1,0 +1,14 @@
+Run: 2023-10-12 07:00:37.748810
+====================================
+Dataset details:
+Name: Subtl Dataset
+Number of total samples: 728
+====================================
+Results:
+Accuracy: 0.6923076923076923
+Precision: 0.7755905511811023
+Recall: 0.5412087912087912
+F1: 0.6375404530744337
+Runtime: 63.3518
+Samples per second: 11.491
+Steps per second: 1.436
