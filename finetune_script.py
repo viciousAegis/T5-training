@@ -140,93 +140,71 @@ dataset
 
 # %%
 MODEL_NAME = 'google/flan-t5-base'
-
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-
-# %%
-sample = dataset['train'][random.randint(0, len(dataset['train']))]
-print("Question: ", sample['question'])
-print("Answer: ")
-# for wrap in textwrap.wrap(color_answer_start(sample), 100):
-#     print(wrap)
+MODEL_PATH = "./models/flan-t5-base-squad-v2"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 
 # %%
-sample_encoding = tokenizer(sample['question'], sample['context'], truncation=True, padding='max_length', max_length=512)
+model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_PATH)
 
 # %%
-print(sample_encoding.keys())
-print(sample_encoding['input_ids'])
-print(sample_encoding['attention_mask'])
+from datetime import datetime
+
+def postprocess_text(preds, labels):
+    preds = [pred.replace(tokenizer.pad_token, '').replace(tokenizer.eos_token, '') for pred in preds]
+    labels = [[label.replace(tokenizer.pad_token, '').replace(tokenizer.eos_token, '')] for label in labels]
+    return preds, labels
+
+def compute_metrics(eval_preds):
+    preds, labels = eval_preds
+    
+    acc = load_metric('accuracy')
+    recall = load_metric('recall')
+    precision = load_metric('precision')
+    f1 = load_metric('f1')
+    
+    if isinstance(preds, tuple):
+        preds = preds[0]
+    decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+    # Replace -100 in the labels as we can't decode them.
+    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
+    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+    decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
+    # map yes/no to 0/1
+    
+    # convert to lowercase
+    decoded_labels = [label[0].lower() for label in decoded_labels]
+    decoded_preds = [pred.lower() for pred in decoded_preds]
+    
+    decoded_labels = [0 if label == 'no' else 1 for label in decoded_labels]
+    decoded_preds = [0 if pred == 'no' else 1 for pred in decoded_preds]
+
+    result = {}
+    result['accuracy'] = acc.compute(predictions=decoded_preds, references=decoded_labels)['accuracy']
+    result['recall'] = recall.compute(predictions=decoded_preds, references=decoded_labels)['recall']
+    result['precision'] = precision.compute(predictions=decoded_preds, references=decoded_labels)['precision']
+    result['f1'] = f1.compute(predictions=decoded_preds, references=decoded_labels)['f1']
+    
+    
+    # output results to a file
+    with open('./eval.txt', 'a') as f:
+        # write the current date and time
+        f.write(f"Date: {datetime.now()}\n")
+        f.write(f"Accuracy: {result['accuracy']}\n")
+        f.write(f"Recall: {result['recall']}\n")
+        f.write(f"Precision: {result['precision']}\n")
+        f.write(f"F1: {result['f1']}\n")
+        f.write("="*50 + "\n")
+    
+    return result
 
 # %%
-preds = [
-    tokenizer.decode(input_id, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-    for input_id in sample_encoding['input_ids']
-]
-" ".join(preds)
+PROMPT = "Given the following question, please indicate if the question is answerable given the context.\n\n"
 
-# %%
-prefix = "Is the following question answerable given the context: "
-
-encoding = tokenizer(
-    prefix + sample['question'],
-    sample['context'],
-    truncation='only_second',
-    padding='max_length',
-    max_length=512,
-    return_attention_mask=True,
-    add_special_tokens=True,
-    return_tensors='pt'
-)
-
-# %%
-encoding.keys()
-
-# %%
-tokenizer.special_tokens_map
-
-# %%
-tokenizer.eos_token, tokenizer.eos_token_id
-
-# %%
-tokenizer.decode(encoding['input_ids'].squeeze())
-
-# %%
-answer_encoding = tokenizer(
-    sample['isAnswerable'],
-    truncation=True,
-    padding='max_length',
-    max_length=8,
-    return_attention_mask=True,
-    add_special_tokens=True,
-    return_tensors='pt'
-)
-
-# %%
-x = tokenizer.decode(answer_encoding['input_ids'].squeeze())
-# remove padding
-x = x.replace(tokenizer.pad_token, '')
-x
-# remove special tokens
-x = x.replace(tokenizer.eos_token, '')
-x
-
-# %%
-labels = answer_encoding['input_ids']
-labels
-
-# %%
-labels[labels == tokenizer.pad_token_id] = -100
-labels
-
-# %%
-# convert dataset to pytorch tensors using the tokenizer
 def convert_to_features(example_batch):
     # Tokenize contexts and questions (as pairs of inputs)
-    prefix = "Is this question answerable given the context: "
     
     encodings = tokenizer(
-        [prefix + question for question in example_batch['question']],
+        [PROMPT + question for question in example_batch['question']],
         example_batch['context'],
         truncation='only_second',
         padding='max_length',
@@ -256,89 +234,62 @@ def convert_to_features(example_batch):
     return encodings
 
 # %%
-# get encodings
-sample_encodings = convert_to_features(dataset['train'][:5])
-sample_encodings.keys()
+from transformers import DataCollatorForSeq2Seq
 
-# %%
-model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
-
-# %%
-# forward pass
-loss = model(input_ids=sample_encodings['input_ids'], attention_mask=sample_encodings['attention_mask'], labels=sample_encodings['labels']).loss
-print(loss.item())  # 0.0001
-
-# %%
-def postprocess_text(preds, labels):
-    preds = [pred.replace(tokenizer.pad_token, '').replace(tokenizer.eos_token, '') for pred in preds]
-    labels = [[label.replace(tokenizer.pad_token, '').replace(tokenizer.eos_token, '')] for label in labels]
-    return preds, labels
-
-def compute_metrics(eval_preds):
-    preds, labels = eval_preds
-    
-    metric = load_metric('accuracy')
-    
-    if isinstance(preds, tuple):
-        preds = preds[0]
-    decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
-    # Replace -100 in the labels as we can't decode them.
-    labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
-    decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
-    decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
-    # map yes/no to 0/1
-    
-    # convert to lowercase
-    decoded_labels = [label[0].lower() for label in decoded_labels]
-    decoded_preds = [pred.lower() for pred in decoded_preds]
-    
-    decoded_labels = [0 if label == 'no' else 1 for label in decoded_labels]
-    decoded_preds = [0 if pred == 'no' else 1 for pred in decoded_preds]
-    print(decoded_preds, decoded_labels)
-    result = metric.compute(predictions=decoded_preds, references=decoded_labels)
-    
-    # output results to a file
-    with open('./eval.txt', 'a') as f:
-        f.write(f"Accuracy: {result['accuracy']}\n")
-    
-    return result
-    
-    
+# we want to ignore tokenizer pad token in the loss
+label_pad_token_id = -100
+# Data collator
+data_collator = DataCollatorForSeq2Seq(
+    tokenizer,
+    model=model,
+    label_pad_token_id=label_pad_token_id,
+    pad_to_multiple_of=8
+)
     
 # %%
 from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments
+import os
 
-# define training args
+repository_id = f"./results/fine-tuned/{MODEL_NAME.split('/')[1]}"
+
+if not os.path.exists(repository_id):
+    os.makedirs(repository_id)
+
 training_args = Seq2SeqTrainingArguments(
-    output_dir='./results',
+    output_dir=repository_id,
     per_device_train_batch_size=8,
     per_device_eval_batch_size=8,
     predict_with_generate=True,
-    overwrite_output_dir=True,
+    fp16=False, # Overflows with fp16
+    learning_rate=5e-5,
+    num_train_epochs=5,
+    # logging & evaluation strategies
+    logging_dir=f"{repository_id}/logs",
+    logging_strategy="steps",
+    logging_steps=500,
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
     save_total_limit=2,
-    fp16=True,
-    learning_rate=1e-4,
-    num_train_epochs=2,
     load_best_model_at_end=True,
-    metric_for_best_model='accuracy',
-    evaluation_strategy='epoch',
-    save_strategy='epoch'
 )
 
 # %%
 trainer = Seq2SeqTrainer(
     model=model,
     args=training_args,
+    data_collator=data_collator,
     train_dataset=dataset['train'].map(convert_to_features, batched=True),
     eval_dataset=dataset['validation'].map(convert_to_features, batched=True),
     compute_metrics=compute_metrics
 )
 # %%
 trainer.train()
+
+# %%
 trainer.evaluate()
 # %%
 # save model
-model.save_pretrained('./models/flan-t5-base-train-2')
-tokenizer.save_pretrained('./models/flan-t5-base-train-2')
+model.save_pretrained('./models/flan-t5-base-train')
+tokenizer.save_pretrained('./models/flan-t5-base-train')
 
 
